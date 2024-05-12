@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with Thermostat Firmware. If not, see <https://www.gnu.org/licenses/>.
 #
-# Copyright (c) 2013, 2017, 2021 Aleksander Mazur
+# Copyright (c) 2013, 2017, 2021, 2024 Aleksander Mazur
 #
 # Generator fontu dla wyświetlacza 7-segmentowego
 
@@ -48,21 +48,31 @@ seg_ofs = {
 
 # przypisanie segmentów do bitów - cecha układu
 # (sposobu podłączenia linii wyświetlacza do portu mikroprocesora)
-map_bit_to_seg = [
-	'.',	#bit7
+#map_bit_to_seg = [# Philips
+#	'.',	#bit7
+#	'g',	#bit6
+#	'a',	#bit5
+#	'f',	#bit4
+#	'b',	#bit3
+#	'e',	#bit2
+#	'c',	#bit1
+#	'd'		#bit0
+#]
+map_bit_to_seg = [# HT-2261LED-V1.0
+	'',		#bit7
 	'g',	#bit6
-	'a',	#bit5
-	'f',	#bit4
-	'b',	#bit3
-	'e',	#bit2
-	'c',	#bit1
-	'd'		#bit0
+	'f',	#bit5
+	'e',	#bit4
+	'd',	#bit3
+	'c',	#bit2
+	'b',	#bit1
+	'a'		#bit0
 ]
 
 #aktywnosc = "10"	# segmenty włączane zerem
 aktywnosc = "01"	# segmenty włączane jedynką
 
-for i in range(0, 10):
+for i in range(0, 16):
 	x_ofs = i * 4
 	result = ''
 	for m in map_bit_to_seg:

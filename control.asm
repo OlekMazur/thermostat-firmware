@@ -13,12 +13,12 @@
 ; You should have received a copy of the GNU General Public License
 ; along with Thermostat Firmware. If not, see <https://www.gnu.org/licenses/>.
 ;
-; Copyright (c) 2018, 2021 Aleksander Mazur
+; Copyright (c) 2018, 2021, 2022 Aleksander Mazur
 ;
 ; Logika sterowania przekaźnikami
 ; Używa procedur obsługi EEPROM z i2c_eeprom.asm
 ; Procedury używają zmiennych control_*
-
+;
 ; Schemat wywołań:
 ; control_init_rtc
 ; control_watchdog
@@ -68,10 +68,35 @@ control_watchdog_ret:
 ; Inicjalizuje maski sterowania i realizuje program zegarowy
 ; Niszczy A, B, C, R1, R6, R7, F0
 control_init_rtc:
-ifdef	I2C_DISPLAY_WR
+ifdef	I2C_SPI_DISPLAY
 	clr flag_display_used
-	clr flag_display_missing
-endif
+	clr flag_display_found_idx
+	jnb flag_display_on, control_skip_display
+	; szukamy funkcji z włączoną flagą ctl_flag_display
+	; o numerze większym lub równym display_func_idx
+	acall control_iterate_functions
+	setb C
+	subb A, display_func_idx
+	jc control_skip_display
+	inc A
+	mov R0, A		; R0 = liczba pozostałych funkcji w EEPROM (> 0)
+	mov R3, display_func_idx	; R3 = bieżący indeks funkcji liczony od 0
+control_find_display_loop:
+	acall control_read_flags
+	jc control_skip_display
+	acall i2c_shin
+	; A = flagi
+	acall eeprom_read_stop
+	jnb ACC.5, control_find_display_next	; ACC.5 = ctl_flag_display
+	; znaleźliśmy
+	mov display_func_idx, R3
+	setb flag_display_found_idx
+	sjmp control_skip_display
+control_find_display_next:
+	inc R3
+	djnz R0, control_find_display_loop
+control_skip_display:
+endif	;I2C_SPI_DISPLAY
 	; zerujemy maski sterowania
 	clr A
 	mov R1, #control_mask_start
@@ -140,24 +165,14 @@ control_ret2:
 ; Niszczy A, B, C, R0, R1, R2(CRC), R3, R6, R7
 control_missing:
 	acall control_iterate_functions
-	jz control_ret2	; nie ma żadnych funkcji w EEPROM lub wystąpił błąd
+	jz control_missing2	; nie ma żadnych funkcji w EEPROM lub wystąpił błąd
 	mov R0, A		; R0 = liczba funkcji w EEPROM (>0)
 	mov R3, #0		; R3 = bieżący indeks funkcji liczony od 0
-ifdef	I2C_DISPLAY_WR
-	; zaczynamy szukanie następnej funkcji z włączoną flagą ctl_flag_display
-	; o numerze większym od obecnej (display_func_curr)
-	mov A, display_func_curr
-	inc A
-	mov display_func_next, A
-	clr flag_display_found_next
-endif
 control_missing_loop:
-ifndef	I2C_DISPLAY_WR
 	acall control_get_used_ptr
 	anl A, @R1
 	; 0 - funkcja nie została użyta
 	jnz control_missing_next
-endif
 	; czytamy flagi
 	acall control_read_flags
 	jc control_missing_next
@@ -169,31 +184,6 @@ endif
 	orl control_mask_all_used, A	; nie powinno zaszkodzić nawet, jeśli funkcja była użyta
 	acall eeprom_read_stop
 	mov A, R2
-ifdef	I2C_DISPLAY_WR
-	jnb ACC.5, control_missing_no_display	; C = ACC.5 (ctl_flag_display)
-	; wyświetlanie temperatury wynikającej z tej funkcji jest włączone
-	jb flag_display_found_next, control_missing_no_display
-	; czy R3 >= display_func_next?
-	mov A, R3
-	cjne A, display_func_next, control_missing_cont
-control_missing_cont:
-	jc control_missing_no_display
-	; znaleźliśmy nowy numer
-	mov display_func_next, A
-	setb flag_display_found_next
-control_missing_no_display:
-	acall control_get_used_ptr
-	anl A, @R1
-	; 0 - funkcja nie została użyta
-	jnz control_missing_next
-	mov A, R3
-	cjne A, display_func_curr, control_missing_another
-	; mieliśmy właśnie wyświetlić tę temperaturę, ale brakuje czujnika
-	; być może wypadałoby jeszcze sprawdzić, czy ctl_flag_display jest ustawiona...
-	setb flag_display_missing
-control_missing_another:
-	mov A, R2
-endif
 	mov C, ACC.6	; C = ACC.6 (ctl_flag_critical)
 	; obliczamy maskę sterowania pośredniego
 	acall control_calc_direct_mask
@@ -211,43 +201,37 @@ endif
 control_missing_next:
 	inc R3
 	djnz R0, control_missing_loop
-ifdef	I2C_DISPLAY_WR
-	jb flag_display_found_next, control_missing_next_ok
-	; jeśli nie znalazła się następna funkcja z włączoną flagą ctl_flag_display,
-	; to następnym razem skanujemy od początku
-	mov display_func_next, #-1
-control_missing_next_ok:
-	; jeśli flag_display_used=1, to znaczy, że wysłaliśmy już temperaturę na wyświetlacz
-	; jeśli flag_display_missing=1, to znaczy, że brakuje temperatury czujnika,
-	;  którego temperatura miała teraz znaleźć się na wyświetlaczu
-	jb flag_display_used, control_display_used
-	jb flag_display_missing, control_display_used
-	; jeśli obie flagi są 0, to pokazujemy zegarek
+control_missing2:
+ifdef	I2C_SPI_DISPLAY
+	jb flag_display_on, control_display_cont
+	; następnym razem zegar, na razie wyświetlacz wyłączony
+	mov display_func_idx, #-1
+	ret
+control_display_cont:
+	jnb flag_display_found_idx, control_display_clock
+	; flag_display_found_idx ustawiona -> temperatura na wyświetlaczu
+	inc display_func_idx
+	jb flag_display_used, control_display_finish
+	; lub informujemy, że temperatury nie ma
+	bcall display_missing
+control_display_finish:
+	; opóźnienie między rozkazami wysyłanymi do wyświetlacza (R0 = 0)
+	djnz R0, $
+	; zapalamy wyświetlacz na pół gwizdka
+ifdef	TUNE_1WIRE
+	mov A, display_intensity
+else
+	mov A, #display_intensity_def
+endif
+	bjmp display_dim
+control_display_clock:
+	; flag_display_found_idx wyczyszczona -> zegar na wyświetlaczu
 	bcall display_clock
-control_display_delay:
-	setb flag_display_used
-	; wyświetlacz nie reaguje na ustawianie jasności wysyłane od razu;
-	; po sukcesie i2c_shout R7=0 i wtedy opóźnienie wynosi
-	; 256*(12+24)/22118400 = 5/12 ms
-	djnz R7, control_display_delay
-control_display_used:
-	clr A
-	jnb flag_display_used, control_display_unused
-	; jeśli mamy coś na wyświetlaczu (temperaturę albo zegarek),
-	; to włączamy wyświetlacz na 2/4, w przeciwnym razie
-	; - kiedy brakuje wszystkich czujników, których temperaturę
-	; mieliśmy wyświetlać - wyłączamy wyświetlacz
-	mov A, #2
-control_display_unused:
-	; A = flag_display_used ? 3 (3/4 jasności) : 0 (wygaś)
-	bcall display_dim
-	mov display_func_curr, display_func_next
-	jnb flag_display_missing, control_ret2
-	; jeszcze piśnięcie, jeśli nie wyświetliliśmy nic z powodu braku czujnika
-	bjmp display_beep
+	mov display_func_idx, #0
+	sjmp control_display_finish
 else
 	ret
-endif
+endif	;I2C_SPI_DISPLAY
 
 ifndef	SKIP_CTRL_TEMP
 ;-----------------------------------------------------------
@@ -319,12 +303,13 @@ control_temperature_known:
 	push ACC	; maska bezpośredniego sterowania przekaźnikami - na stos
 	; musimy przerwać odczyt, żeby pobrać dane z właściwego programu dobowego
 	acall eeprom_read_stop
-ifdef	I2C_DISPLAY_WR
+ifdef	I2C_SPI_DISPLAY
+	jnb flag_display_on, control_display_handled
 	mov A, R2
-	jnb ACC.5, control_temperature_displayed	; ctl_flag_display
+	jnb ACC.5, control_display_handled	; ctl_flag_display
 	bcall display_temperature
-control_temperature_displayed:
-endif
+control_display_handled:
+endif	;I2C_SPI_DISPLAY
 	acall control_get_function_address
 	add A, #ctl_offset_f_daily
 	acall control_read_daily_program
@@ -756,7 +741,7 @@ control_temp_diff:
 control_ret7:
 	ret
 
-endif
+endif	;SKIP_CTRL_TEMP
 
 ;-----------------------------------------------------------
 ; Odczytuje z EEPROM 3 bajty do control_settings_block

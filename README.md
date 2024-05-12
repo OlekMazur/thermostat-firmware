@@ -25,6 +25,7 @@ Supported peripheral devices
 | I²C    | AT24C02 | Configuration storage |
 | I²C    | TMP75   | Temperature measurement & reporting |
 | I²C    | [7-seg 4-digit LED display module] | Clock & temperature display |
+| SPI    | HT-2261LED-V1.0 | Clock & temperature display |
 
 Principle of operation
 ----------------------
@@ -341,7 +342,10 @@ Supervisor must wait for response before issuing next command.
 | \<space> | Reset watchdog | \<space> |
 | bxx     | Read RAM byte at xx (hex) | yy (byte from RAM, hex) |
 | Bxx     | Write byte xx (hex) to RAM at the address last used with **b** command (above) | @ |
-| E       | Get address of configuration EEPROM on the I²C bus | xx (value of I2C_EEPROM_WR), or **!** if it's just A0 = the default |
+| E       | Get address of configuration EEPROM on the I²C bus | xx (value of I2C_EEPROM_WR), or **?** if it's just A0 = the default |
+| (       | Send SPI *START* | @ |
+| )       | Send SPI *STOP* | @ |
+| +xx     | Send byte xx (hex) to SPI | @ |
 
 It is recommended that supervisor resets watchdog by sending space
 after each incoming report. Not doing this for `WATCHDOG_MAX` = 22 times
@@ -458,6 +462,11 @@ Test [7-seg 4-digit LED display module]:
 IW76W09S
 ```
 
+Turn on **HT-2261LED-V1.0** display module and show something on it:
+```
+(+8F)(+C0+73+73+3E+3E+73+73+77+77+00)
+```
+
 Set RTC to Wednesday (3) noon (12:00) and reset *clock settings index*
 (assuming RAM locations as in the *Example address* above):
 ```
@@ -489,6 +498,30 @@ Address (for writing) of [7-seg 4-digit LED display module] on the I²C bus.
 ![Display]
 
 If undefined, there is no display module support, what saves 201 B.
+
+### SPI_STB, SPI_DIO, SPI_CLK
+Ports where three-wire bus is connected to.
+DIO and CLK may be shared with SDA and SCL.
+If undefined, there is no three-wire bus support.
+
+### DISPLAY_TM1628
+If defined, there is TM1628-compatible display connected via SPI
+(e.g. a **HT-2261LED-V1.0** board).
+
+![HT-2261LED]
+
+### DISPLAY_SWITCH_PORT
+Port where a switch controlling the display is connected.
+The switch should connect given port to ground.
+
+If undefined, there is no such switch and the display is turned on
+by default. It can be turned off/on via UART by manipulating `flag_display_on`
+with **b** and **B** commands only.
+
+### DISPLAY_SWITCH_NEGATIVE
+If defined, low state of DISPLAY_SWITCH_PORT turns display on.
+
+If undefined (default), high state of DISPLAY_SWITCH_PORT turns display on.
 
 ### OW_PARASITE
 If defined, then 1-wire bus is parasite-powered
@@ -611,6 +644,34 @@ that contrary to AT89C4051 that part misses brown-out reset.
 
 ### Example 2
 
+Let's use chassis of some old STB along with its LED display module.
+
+![HD-527]
+
+```
+CONSERVATIVE_CONTROL equ    1
+CONTROL_NEGATIVE     equ    1
+RELAY_PORT           equ    P1
+OW_PWR               equ    P3.4
+OW_PARASITE          equ    21
+OW_DQ                equ    P3.5
+SDA                  equ    P3.3
+SCL                  equ    P3.2
+SPI_STB              equ    P3.7
+SPI_DIO              equ    P3.3
+SPI_CLK              equ    P3.2
+I2C_EEPROM_WR        equ    10100000b
+I2C_TEMP_WR          equ    10010000b
+DISPLAY_TM1628       equ    1
+DISPLAY_SWITCH_PORT  equ    P1.0
+TUNE_1WIRE           equ    1
+AT89C4051            equ    1
+```
+
+Here we need AT89C4051 since the firmware is 2425 B.
+
+### Example 3
+
 Instead of opto-isolated relay module we may use ULN2003 + up to 7 relays.
 
 ![PCB2] ![PCB3] ![PCB4] ![PCB5]
@@ -630,7 +691,7 @@ TUNE_1WIRE           equ	1
 
 2041 B this time.
 
-### Example 3
+### Example 4
 
 No parasite power, but capable of resetting DS1821 to 1-wire mode
 from standalone thermostat mode (using **t** command).
@@ -670,6 +731,7 @@ along with Thermostat Firmware. If not, see <https://www.gnu.org/licenses/>.
 
 [7-seg 4-digit LED display module]: https://www.elektroda.pl/rtvforum/topic117391.html
 [Display]: img/LED_module.jpg
+[HT-2261LED]: img/HT-2261LED-V1.0.jpg
 [PCB top]: img/PCB_A.jpg
 [PCB bottom]: img/PCB_R.jpg
 [Relays]: img/relays.jpg
@@ -677,5 +739,6 @@ along with Thermostat Firmware. If not, see <https://www.gnu.org/licenses/>.
 [PCB3]: img/PCB3_A.jpg
 [PCB4]: img/PCB4_A.jpg
 [PCB5]: img/PCB5_A.jpg
+[HD-527]: img/HD-527.jpg
 [GNU General Public License]: LICENSE.md
 [asem-51]: http://plit.de/asem-51

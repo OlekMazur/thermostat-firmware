@@ -13,7 +13,7 @@
 ; You should have received a copy of the GNU General Public License
 ; along with Thermostat Firmware. If not, see <https://www.gnu.org/licenses/>.
 ;
-; Copyright (c) 2013, 2014, 2015, 2016, 2017, 2018, 2021, 2022 Aleksander Mazur
+; Copyright (c) 2013, 2014, 2015, 2016, 2017, 2018, 2021, 2022, 2024 Aleksander Mazur
 ;
 ; Obsługa przerwania portu szeregowego
 
@@ -227,6 +227,42 @@ rx_cmd_set_clock_minutes_mismatch:
 	sjmp rx_cmd_write_to_memory
 
 rx_cmd_set_clock_seconds_mismatch:
+endif
+
+ifdef	SPI_STB
+;-----------------------------------------------------------
+; Komendy SPI: START
+	cjne A, #'(', rx_cmd_spi_start_mismatch
+	bcall spi_start
+	sjmp rx_cmd_success
+
+rx_cmd_spi_start_mismatch:
+;-----------------------------------------------------------
+; Komendy SPI: STOP
+	cjne A, #')', rx_cmd_spi_stop_mismatch
+	bcall spi_stop
+	sjmp rx_cmd_success
+
+rx_cmd_spi_stop_mismatch:
+;-----------------------------------------------------------
+; Komendy SPI: zapis bajtu
+	cjne A, #'+', rx_cmd_spi_write_mismatch
+	acall rx_cmd_collect_arg
+	; mamy bajt do wysłania na SPI w A
+	bcall spi_shout
+	sjmp rx_cmd_success
+
+rx_cmd_spi_write_mismatch:
+endif
+
+ifdef	DISPLAY_TM1628
+;-----------------------------------------------------------
+; Test wyświetlania temperatury (trzeba wcześniej wpisać do local_temp_h:local_temp_l czyli R4:R5)
+	cjne A, #'-', rx_cmd_display_temp_mismatch
+	bcall display_temperature_unconditional
+	sjmp rx_cmd_success
+
+rx_cmd_display_temp_mismatch:
 endif
 
 ;-----------------------------------------------------------

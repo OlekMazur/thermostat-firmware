@@ -14,7 +14,7 @@
 ; along with Thermostat Firmware. If not, see <https://www.gnu.org/licenses/>.
 ;
 ; Copyright (c) 2013, 2014, 2015, 2016, 2017, 2018 Aleksander Mazur
-
+;
 ; Obsługa czujnika temperatury TMP75 na magistrali I2C
 ; Bazuje na niskopoziomowych procedurach z i2c.asm
 

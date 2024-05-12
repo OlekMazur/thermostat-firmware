@@ -13,10 +13,17 @@
 ; You should have received a copy of the GNU General Public License
 ; along with Thermostat Firmware. If not, see <https://www.gnu.org/licenses/>.
 ;
-; Copyright (c) 2013, 2014, 2015, 2016, 2017, 2018, 2020, 2021, 2022 Aleksander Mazur
+; Copyright (c) 2013, 2014, 2015, 2016, 2017, 2018, 2020, 2021, 2022, 2024 Aleksander Mazur
 
 ;===========================================================
 ; Stałe
+
+ifdef	I2C_DISPLAY_WR
+I2C_SPI_DISPLAY	equ	1
+endif
+ifdef	DISPLAY_TM1628
+I2C_SPI_DISPLAY	equ	1
+endif
 
 ; Rozmiar scratchpadu czujników DS18B20/DS18S20/DS1820
 ds_scratchpad_size	equ 9
@@ -59,15 +66,15 @@ ifdef	I2C_TEMP_WR
 ; czy wystąpił błąd podczas inicjalizacji pomiaru przez wewnętrzny czujnik temperatury (TMP75 na I2C)
 flag_no_int_sensor:		dbit 1
 endif	;I2C_TEMP_WR
-ifdef	I2C_DISPLAY_WR
+ifdef	I2C_SPI_DISPLAY
+; czy w ogóle włączyć wyświetlacz w tym cyklu
+flag_display_on:		dbit 1
 ; czy wyświetlono temperaturę na wyświetlaczu
 flag_display_used:		dbit 1
-; czy brakuje czujnika, którego temperatura ma być pokazana na wyświetlaczu
-flag_display_missing:	dbit 1
-; czy znaleźliśmy już numer funkcji, której temperaturę pokażemy następnym razem na wyświetlaczu
-; (jeśli tak, to jest w display_func_next)
-flag_display_found_next:	dbit 1
-endif	;I2C_DISPLAY_WR
+; czy znaleźliśmy numer funkcji, której temperaturę wejściową pokażemy na wyświetlaczu
+; (jeśli tak, to jest w display_func_idx)
+flag_display_found_idx:	dbit 1
+endif	;I2C_SPI_DISPLAY
 ifdef	MATCH_ON_SEARCH_FAILURE
 ; czy owhl_match_rom_from_eeprom ma nadpisać global_ow_id odczytanym z EEPROM
 flag_overwrite_ow_id:	dbit 1
@@ -133,6 +140,16 @@ control_mask_prev_or:		ds 1
 control_mask_prev_and:		ds 1
 endif
 
+ifdef	I2C_SPI_DISPLAY
+; Indeks funkcji, której należy użyć do wyświetlania temperatury.
+; Przed wejściem do control_init_rtc jest to minimalny indeks, od którego
+; należy rozpocząć poszukiwanie funkcji z ustawioną flagą ctl_flag_display.
+; Po wyjściu z control_init_rtc, jeśli flaga flag_display_found_idx jest ustawiona,
+; jest tu indeks funkcji, której należy użyć. Jeśli flaga jest wyczyszczona,
+; należy pokazać zegarek.
+display_func_idx:	ds 1
+endif	;I2C_SPI_DISPLAY
+
 ;-----------------------------------------------------------
 uninitialized:	; początek bloku zmiennych, których nie trzeba inicjować na 0 (tj. albo wcale nie trzeba, albo trzeba, ale na inną wartość)
 
@@ -161,6 +178,13 @@ ow_tDSO_def	equ 9
 ow_tRD_def	equ 41
 ; Dodatkowe opóźnienie przed cyklami odczytu/zapisu w procedurze wyszukiwania
 ow_SEARCH_DELAY_def	equ 0
+ifdef	DISPLAY_TM1628
+; Jasność wyświetlacza (0-8)
+display_intensity_def	equ 4	; -> 8Bh = pulse width 10/16
+else
+; Jasność wyświetlacza (0-4)
+display_intensity_def	equ 2
+endif
 
 ifdef	TUNE_1WIRE
 ow_tune_start:
@@ -170,6 +194,7 @@ ow_tWR:		ds 1
 ow_tDSO:	ds 1
 ow_tRD:		ds 1
 ow_SEARCH_DELAY:	ds 1
+display_intensity:	ds 1
 ow_tune_end:
 
 ow_tune_defaults_here macro
@@ -181,16 +206,10 @@ ow_tune_start_def:
 	db ow_tDSO_def
 	db ow_tRD_def
 	db ow_SEARCH_DELAY_def
+	db display_intensity_def
 ow_tune_end_def:
 endm
 
-endif
-
-ifdef	I2C_DISPLAY_WR
-; Indeks funkcji, której należy użyć następnym razem do wyświetlania temperatury
-display_func_curr:	ds 1
-; Zmienna robocza służąca do wyznaczania wartości display_func_curr w kolejnej iteracji
-display_func_next:	ds 1
 endif
 
 ; zmienne do użytku w control.asm
@@ -346,6 +365,11 @@ zero_loop:
 	; inicjalizacja tych zmiennych i flag, które nie mają być wyzerowane
 	setb flag_timer	; zaczynamy od natychmiastowego pomiaru
 	mov global_wdc, #WATCHDOG_MAX
+ifdef	I2C_SPI_DISPLAY
+ifndef	DISPLAY_SWITCH_PORT
+	setb flag_display_on	; włączamy raz, potem przez port szeregowy ewentualnie można zmienić
+endif	;DISPLAY_SWITCH_PORT
+endif	;I2C_SPI_DISPLAY
 
 ifdef	TUNE_1WIRE
 	; kopiujemy ow_tune_start_def do ow_tune_start i tak dalej
@@ -358,10 +382,6 @@ ow_tune_rel:
 	mov @R0, A
 	inc R0
 	cjne R0, #ow_tune_end, ow_tune_copy_loop
-endif
-
-ifdef	I2C_DISPLAY_WR
-	mov display_func_curr, #-1
 endif
 
 	; inicjacja stanu
@@ -458,13 +478,20 @@ ifndef	SKIP_UART
 	mov A, #13
 	acall write_char
 endif	;SKIP_UART
-ifdef	I2C_DISPLAY_WR
+ifdef	I2C_SPI_DISPLAY
 	; wygaszamy wyświetlacz
 	; - mignięcie na czas pomiaru sygnalizuje, że coś się zmienia
 	; - zmniejszamy pobór prądu, który jest potrzebny czujnikom
 	clr A
 	bcall display_dim
-endif
+ifdef	DISPLAY_SWITCH_PORT
+	mov C, DISPLAY_SWITCH_PORT
+ifdef	DISPLAY_SWITCH_NEGATIVE
+	cpl C
+endif	;DISPLAY_SWITCH_NEGATIVE
+	mov flag_display_on, C
+endif	;DISPLAY_SWITCH_PORT
+endif	;I2C_SPI_DISPLAY
 ifdef	I2C_TEMP_WR
 	; inicjujemy pomiar z czujnika wewnętrznego
 	bcall int_sensor_start_measuring
@@ -674,10 +701,14 @@ ifndef	SKIP_UART
 	acall write_char
 	acall write_semicolon
 main_eeprom_ok:
+endif	;SKIP_UART
 	acall control_missing
 	acall control_indirect_masks
+ifndef	SKIP_UART
 	acall write_control_masks
+endif	;SKIP_UART
 	acall control_apply_direct_masks
+ifndef	SKIP_UART
 	acall write_relay_port
 endif	;SKIP_UART
 	ajmp main_pre_loop
@@ -808,10 +839,16 @@ endif	;I2C_DISPLAY_WR
 ifdef	I2C_TEMP_WR
 $include (i2c_tmp75.asm)
 endif	;I2C_TEMP_WR
+ifdef	SPI_STB
+$include (spi.asm)
+ifdef	DISPLAY_TM1628
+$include (display_tm1628.asm)
+endif	;DISPLAY_TM1628
+endif	;SPI_STB
 $include (timer.asm)
 
 ifdef	AT89C4051
-db	13,10,'Copyright ',0C2h,0A9h,' 2013-2022 Aleksander Mazur',13,10
+db	13,10,'Copyright ',0C2h,0A9h,' 2013-2024 Aleksander Mazur',13,10
 endif	;AT89C4051
 
 ifdef	SDA

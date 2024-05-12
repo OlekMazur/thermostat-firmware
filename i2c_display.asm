@@ -21,8 +21,9 @@
 ;
 ; adres: 0x76
 ; zapis:
-; 0, 20, 59: pokaż godzinę 20:59 z migającym dwukropkiem
-; 1, 20, 59: pokaż godzinę 20:59 ze świecącym dwukropkiem
+; 0, 0x15, 0x25: pokaż godzinę 21:37 z migającym dwukropkiem
+; 1, 0x15, 0x25: pokaż godzinę 21:37 ze świecącym dwukropkiem
+; 2, 0x4F, 0x4C, 0x4F, 0x80: wyświetl podane znaki ASCII (z obsługiwanego podzbioru); 0x80 = flaga kropki
 ; 3, 0xFF, 0xFF, 0xFF, 0xFF: zaświeć segmenty, które mają _jedynkę_
 ; 5, 1: zaświeć czerwoną diodę
 ; 5, 0: zgaś czerwoną diodę
@@ -36,12 +37,17 @@
 ; 8, 4: ustaw jasność na 100% (104 mA)
 ; 9: testuj wyświetlacz (L11.5, potem wszystko świeci i piszczy)
 ; (jasność dotyczy też czerwonej diody obok wyświetlacza)
+;
+; Wyświetlacz nie reaguje na ustawianie jasności wysyłane od razu po innym rozkazie,
+; ale po 5/12 ms już daje sobie radę.
 
 I2C_DISPLAY_TIME	equ 0
+I2C_DISPLAY_ASCII	equ	2
 I2C_DISPLAY_SEG		equ	3
 I2C_DISPLAY_BUZZ	equ	6
 I2C_DISPLAY_DIM		equ	8
 
+ifdef	USE_DISPLAY_SEG
 ;-----------------------------------------------------------
 ; Wysyła na I2C kod fontu reprezentujący cyfrę przekazaną w A.
 ; Jeśli R6 = 1, to dodatkowo zapala kropkę dziesiętną po cyfrze.
@@ -59,19 +65,44 @@ display_digit_cont:
 charset:
 $include (font.asm)
 
+I2C_DISPLAY_DIGIT	equ	I2C_DISPLAY_SEG
+
+else
+
+KROPKA	equ	80h
+MYSLNIK	equ	'-'
+
+;-----------------------------------------------------------
+; Wysyła na I2C kod ASCII cyfry przekazanej w A.
+; Jeśli R6 = 1, to dodatkowo zapala kropkę dziesiętną po cyfrze.
+; Zwraca C=0 jeśli sukces, C=1 jeśli wystąpił błąd na magistrali I2C.
+; Niszczy A, C, R7
+display_digit:
+	orl A, #30h
+	cjne R6, #1, display_digit_cont
+	orl A, #KROPKA
+display_digit_cont:
+	sjmp i2c_shout
+
+I2C_DISPLAY_DIGIT	equ	I2C_DISPLAY_ASCII
+
+endif
+
 ;-----------------------------------------------------------
 ; Wyświetla temperaturę przekazaną w local_temp_h:local_temp_l
-; o ile w R3 jest właściwy numer funkcji (równy display_func_next).
-; Wtedy też aktualizuje display_func_next i ustawia flag_display_used.
+; o ile w R3 jest właściwy numer funkcji (równy display_func_idx).
+; Wtedy też ustawia flag_display_used.
 ; local_temp_h - przed przecinkiem
 ; local_temp_l - po przecinku
 ; w kodzie uzupełnieniowym do dwóch.
 ; Niszczy: A, B, C, R6, R7
 display_temperature:
+	jnb flag_display_found_idx, display_ret
 	mov A, R3
-	cjne A, display_func_next, display_ret
+	cjne A, display_func_idx, display_ret
+display_temperature_unconditional:
 	setb flag_display_used
-	mov B, #I2C_DISPLAY_SEG
+	mov B, #I2C_DISPLAY_DIGIT
 	bcall display_start
 	jc display_ret
 	; zaczynamy
@@ -149,14 +180,27 @@ display_ret:
 	ret
 
 ;-----------------------------------------------------------
-; Piszczy raz
-; Niszczy A, B, C, R7
-display_beep:
+; Informuje o braku czujnika/temperatury
+; Niszczy A, B, C, R7, R6
+display_missing:
+ifdef	USE_DISPLAY_BUZZER
+	; Piszczy raz
 	mov B, #I2C_DISPLAY_BUZZ
 	bcall display_start
 	jc display_ret
 	mov A, #1
 	bcall i2c_shout
+else
+	; Same myślniki
+	mov B, #I2C_DISPLAY_DIGIT
+	bcall display_start
+	jc display_ret
+	mov R6, #4
+display_missing_loop:
+	mov A, #MYSLNIK
+	bcall i2c_shout
+	djnz R6, display_missing_loop
+endif
 	sjmp display_i2c_stop
 
 ;-----------------------------------------------------------
